@@ -1,0 +1,23 @@
+server:
+  port: 8080
+
+spring:
+  datasource:
+    driver-class-name: org.postgresql.Driver
+    url: jdbc:postgresql://<pgbouncer-host>:6432/<dbname>   # PgBouncer 포트로!
+    username: <user>
+    password: <pass>
+    hikari:
+      maximum-pool-size: 10          # 일부러 작게 잡아 재현 용이
+      minimum-idle: 2
+      connection-timeout: 2000       # 2s: PgBouncer query_wait_timeout과 맞춰보자
+      validation-timeout: 1000
+      idle-timeout: 30000
+      max-lifetime: 600000
+      leak-detection-threshold: 5000 # 5s 이상 점유 시 로그로 누수 감지
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,metrics,prometheus
