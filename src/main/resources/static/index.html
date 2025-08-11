@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <title>pg-wait-lab control panel</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin: 32px; }
+    h1 { margin-bottom: 8px; }
+    .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+    .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.06); }
+    .row { display: flex; gap: 8px; align-items: center; margin: 8px 0; }
+    input[type="number"], input[type="text"] { padding: 6px 10px; border: 1px solid #d1d5db; border-radius: 8px; width: 100%; }
+    button { padding: 8px 12px; border: 1px solid #111827; background: #111827; color: #fff; border-radius: 8px; cursor: pointer; }
+    button.secondary { background: #fff; color: #111827; }
+    pre { background: #0b1020; color: #d1e7ff; padding: 12px; border-radius: 10px; max-height: 320px; overflow: auto; }
+    .muted { color: #6b7280; font-size: 12px; }
+    .ok { color: #059669; }
+    .err { color: #dc2626; }
+  </style>
+</head>
+<body>
+  <h1>Pg Wait Lab — Control Panel</h1>
+  <p class="muted">이 페이지에서 백엔드 엔드포인트를 직접 호출해 풀 고갈/대기/타임아웃을 재현할 수 있습니다.</p>
+
+  <div class="card">
+    <div class="row">
+      <label>기본 API 베이스 URL</label>
+      <input id="baseUrl" type="text" />
+    </div>
+    <div class="muted">외부 Tomcat의 WAR 컨텍스트 배포 시 자동으로 채워집니다. 필요하면 직접 수정하세요.</div>
+  </div>
+
+  <div class="grid" style="margin-top:16px">
+    <div class="card">
+      <h3>Ping (커넥션 획득 + 간단 쿼리)</h3>
+      <div class="row">
+        <button id="btnPing">/test/ping 실행</button>
+      </div>
+      <pre id="outPing"></pre>
+    </div>
+
+    <div class="card">
+      <h3>느린 쿼리</h3>
+      <div class="row">
+        <label for="sleepSec">sleepSec(초):</label>
+        <input id="sleepSec" type="number" min="0" value="5" />
+        <button id="btnSlow">/test/query 실행</button>
+      </div>
+      <pre id="outSlow"></pre>
+    </div>
+
+    <div class="card">
+      <h3>커넥션 점유(풀 고갈 유도)</h3>
+      <div class="row">
+        <label for="holdConnSec">holdSec(초):</label>
+        <input id="holdConnSec" type="number" min="1" value="60" />
+        <label for="holdConnN">동시 N:</label>
+        <input id="holdConnN" type="number" min="1" value="10" />
+      </div>
+      <div class="row">
+        <button id="btnHoldConn">/test/hold-conn 병렬 실행</button>
+        <button id="btnCancelHold" class="secondary">취소(새로고침)</button>
+      </div>
+      <pre id="outHoldConn"></pre>
+    </div>
+
+    <div class="card">
+      <h3>Idle in transaction</h3>
+      <div class="row">
+        <label for="holdTxSec">holdSec(초):</label>
+        <input id="holdTxSec" type="number" min="1" value="120" />
+        <label for="commitTx">commit?</label>
+        <select id="commitTx">
+          <option value="false" selected>false(rollback)</option>
+          <option value="true">true(commit)</option>
+        </select>
+        <label for="holdTxN">동시 N:</label>
+        <input id="holdTxN" type="number" min="1" value="5" />
+      </div>
+      <div class="row">
+        <button id="btnHoldTx">/test/hold-tx 병렬 실행</button>
+      </div>
+      <pre id="outHoldTx"></pre>
+    </div>
+  </div>
+
+  <script>
+    // 배포 형태에 따른 기본 베이스 URL 계산
+    // - 내장 톰캣: http://host:8080/
+    // - 외부 Tomcat WAR 컨텍스트: http://host:8080/<war-name>/
+    function detectBaseUrl() {
+      const { origin, pathname } = window.location;
+      // pathname이 보통 / 또는 /pg-wait-lab/ 같은 형태
+      const parts = pathname.split("/").filter(Boolean);
+      let basePath = "/";
+      if (parts.length > 0) {
+        // 정적 리소스(/index.html)가 컨텍스트 하위에 있으면 첫 부분이 컨텍스트
+        basePath = "/" + parts[0] + "/";
+      }
+      return origin + basePath;
+    }
+
+    const baseUrlInput = document.getElementById("baseUrl");
+    baseUrlInput.value = detectBaseUrl();
+
+    const q = (id) => document.getElementById(id);
+    const log = (el, msg, ok=true) => {
+      const line = `[${new Date().toLocaleTimeString()}] ${ok ? "OK" : "ERR"} ${msg}\n`;
+      el.textContent += line;
+      el.scrollTop = el.scrollHeight;
+    };
+
+    async function callGet(path) {
+      const url = baseUrlInput.value.replace(/\/+$/, "") + path;
+      const res = await fetch(url, { method: "GET" });
+      const text = await res.text();
+      return { status: res.status, text };
+    }
+
+    async function callPost(path) {
+      const url = baseUrlInput.value.replace(/\/+$/, "") + path;
+      const res = await fetch(url, { method: "POST" });
+      const text = await res.text();
+      return { status: res.status, text };
+    }
+
+    // Ping
+    q("btnPing").onclick = async () => {
+      const out = q("outPing");
+      out.textContent = "";
+      try {
+        const r = await callGet("/test/ping");
+        log(out, `status=${r.status} body=${r.text}`, r.status === 200);
+      } catch (e) {
+        log(out, `${e}`, false);
+      }
+    };
+
+    // 느린 쿼리
+    q("btnSlow").onclick = async () => {
+      const out = q("outSlow");
+      out.textContent = "";
+      const sec = parseInt(q("sleepSec").value || "5", 10);
+      try {
+        const r = await callGet(`/test/query?sleepSec=${sec}`);
+        log(out, `status=${r.status} body=${r.text}`, r.status === 200);
+      } catch (e) {
+        log(out, `${e}`, false);
+      }
+    };
+
+    // 커넥션 점유 병렬
+    q("btnHoldConn").onclick = async () => {
+      const out = q("outHoldConn");
+      out.textContent = "";
+      const sec = parseInt(q("holdConnSec").value || "60", 10);
+      const N = parseInt(q("holdConnN").value || "10", 10);
+      log(out, `start hold-conn: N=${N}, ${sec}s`);
+      const tasks = Array.from({ length: N }, (_, i) => (async () => {
+        try {
+          const r = await callPost(`/test/hold-conn?holdSec=${sec}`);
+          log(out, `#${i+1}: status=${r.status} body=${r.text}`, r.status === 200);
+        } catch (e) {
+          log(out, `#${i+1}: ${e}`, false);
+        }
+      })());
+      await Promise.allSettled(tasks);
+      log(out, `done hold-conn N=${N}`);
+    };
+    q("btnCancelHold").onclick = () => location.reload();
+
+    // Idle in transaction 병렬
+    q("btnHoldTx").onclick = async () => {
+      const out = q("outHoldTx");
+      out.textContent = "";
+      const sec = parseInt(q("holdTxSec").value || "120", 10);
+      const commit = q("commitTx").value;
+      const N = parseInt(q("holdTxN").value || "5", 10);
+      log(out, `start hold-tx: N=${N}, ${sec}s, commit=${commit}`);
+      const tasks = Array.from({ length: N }, (_, i) => (async () => {
+        try {
+          const r = await callPost(`/test/hold-tx?holdSec=${sec}&commit=${commit}`);
+          log(out, `#${i+1}: status=${r.status} body=${r.text}`, r.status === 200);
+        } catch (e) {
+          log(out, `#${i+1}: ${e}`, false);
+        }
+      })());
+      await Promise.allSettled(tasks);
+      log(out, `done hold-tx N=${N}`);
+    };
+  </script>
+</body>
+</html>
