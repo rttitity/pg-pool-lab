@@ -4,9 +4,9 @@ server:
 spring:
   datasource:
     driver-class-name: org.postgresql.Driver
-    url: jdbc:postgresql://<pgbouncer-host>:6432/<dbname>   # PgBouncer 포트로!
-    username: <user>
-    password: <pass>
+    url: jdbc:postgresql://10.0.52.6:6432/dvdrental   # PgBouncer 포트로!
+    username: backup
+    password:
     hikari:
       maximum-pool-size: 10          # 일부러 작게 잡아 재현 용이
       minimum-idle: 2
@@ -21,3 +21,8 @@ management:
     web:
       exposure:
         include: health,metrics,prometheus
+
+logging:
+  level:
+    org.springframework.jdbc: DEBUG
+    com.zaxxer.hikari: DEBUG
